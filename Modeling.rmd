@@ -1,0 +1,264 @@
+---
+title: "Modeling IS6812"
+author: "Brian Frerichs"
+date: "2025-10-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+
+library(tidyverse)
+library(caret)
+library(pROC)
+library(janitor)
+library(readr)
+library(dplyr)
+library(caret)
+library(e1071)
+
+application_train <- read_csv("application_train.csv")
+
+
+## trim data set to only include most important predictors
+
+application_train_slim <- application_train %>%
+  select(TARGET, CNT_CHILDREN, AMT_INCOME_TOTAL,AMT_CREDIT,AMT_ANNUITY,NAME_INCOME_TYPE,DAYS_BIRTH,DAYS_EMPLOYED,OCCUPATION_TYPE,CNT_FAM_MEMBERS,EXT_SOURCE_1,EXT_SOURCE_2,EXT_SOURCE_3)
+
+
+## I chose to create a new column called employment duration that bins the DAYS_EMPLOYED column and handles the special 365243 value
+
+APP_TRAIN_BIN_EMPLOYMENT <- application_train_slim %>%
+  mutate(
+    EMPLOYMENT_DURATION = case_when(
+      DAYS_EMPLOYED == 365243 ~ "Not Working",
+      DAYS_EMPLOYED > -365 ~ "Short Term",
+      DAYS_EMPLOYED <= -365 & DAYS_EMPLOYED >= -1825 ~ "Medium Term",
+      TRUE ~ "Long Term" # Default case if no other conditions are met
+    )
+  )
+
+## Drop the rows where AMT_ANNUITY is blank because there are only a few
+
+DROP_BLANKS <- APP_TRAIN_BIN_EMPLOYMENT %>%
+  filter(!is.na(AMT_ANNUITY))
+
+
+## Drop the rows where CNT_FAM_MEMBERS is blank because there are only a few
+
+DROP_BLANKS <- DROP_BLANKS %>%
+  filter(!is.na(CNT_FAM_MEMBERS))
+  
+
+
+## Replace NA's in OCCUPATION_TYPE with an "Unavailable"
+
+FIX_EMPLOYMENT <- DROP_BLANKS %>%
+  mutate(
+    OCCUPATION_TYPE = case_when(
+      is.na(OCCUPATION_TYPE) ~ "Unavailable",
+      TRUE ~ OCCUPATION_TYPE
+    )
+  )
+
+
+## Do median imputation for the missing risk score values
+
+risk_scores <- FIX_EMPLOYMENT[, c("EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3")]
+
+
+for (col in names(risk_scores)) {
+  # Convert to numeric if not already
+  risk_scores[[col]] <- as.numeric(risk_scores[[col]])
+  
+  # Replace NA with median
+  if (is.numeric(risk_scores[[col]])) {
+    median_value <- median(risk_scores[[col]], na.rm = TRUE)
+    risk_scores[[col]][is.na(risk_scores[[col]])] <- median_value
+  }
+}
+
+FIX_EMPLOYMENT[, c("EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3")] <- risk_scores
+
+CLEAN_TRAIN <- clean_names(FIX_EMPLOYMENT)
+view(CLEAN_TRAIN)
+
+
+```
+
+
+
+
+
+
+```{r}
+## look at proportions of the target variable
+
+CLEAN_TRAIN |>
+     count(target) |>
+     mutate(perc = n/sum(n)) 
+
+## convert employment duration to a factor
+CLEAN_TRAIN$employment_duration <- factor(CLEAN_TRAIN$employment_duration)
+
+
+
+## set seed for reproducibility
+
+set.seed(12345)
+
+## split training data into a train set and a model validation set
+
+index_numbers_split <- createDataPartition(CLEAN_TRAIN$target,p=.7,list = FALSE)
+
+model_tr <- CLEAN_TRAIN[index_numbers_split,]
+model_val <- CLEAN_TRAIN[-index_numbers_split,]
+
+
+
+```
+
+
+```{r}
+# Fit logistic regression model w intercept only
+(model1 <- glm(target ~ 1, 
+               data = model_tr, 
+               family = binomial)) %>% 
+     summary() ## AIC 120383
+
+auc_null <- roc(response = model_tr$target, predictor = predict(model1, type = "response"))
+auc_null ## 0.5, totally random
+
+
+
+# Convert target to factor with appropriate labels
+model_tr$target <- factor(ifelse(model_tr$target == 0, "no_default", "default"),
+                          levels = c("no_default", "default"))
+
+model_val$target <- factor(ifelse(model_val$target == 0, "no_default", "default"),
+                          levels = c("no_default", "default"))
+
+
+caret_glm <- train(
+  target ~ amt_income_total +
+           amt_annuity +
+           amt_credit +
+           ext_source_1 +
+           ext_source_2 +
+           ext_source_3 +
+           days_birth +
+           employment_duration,
+  method = "glm",
+  family = "binomial",
+  trControl = trainControl(
+    method = "cv",
+    number = 5,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "down"
+  ),
+  data = model_tr,
+  metric = "ROC"
+)
+
+summary(caret_glm)
+
+
+# ROC for training set
+train_probs <- predict(caret_glm, newdata = model_tr, type = "prob")[, "default"]
+roc_train <- roc(response = model_tr$target, predictor = train_probs)
+cat("Train AUC:", auc(roc_train), "\n")
+
+# ROC for test set
+test_probs <- predict(caret_glm, newdata = model_val, type = "prob")[, "default"]
+roc_test <- roc(response = model_val$target, predictor = test_probs)
+cat("Test AUC:", auc(roc_test), "\n")
+
+# Optional: Plot both ROC curves
+plot(roc_train, col = "blue", main = "ROC Curves")
+lines(roc_test, col = "red")
+legend("bottomright", legend = c("Train", "Test"), col = c("blue", "red"), lwd = 2)
+
+# ROC for training set
+train_probs <- predict(caret_glm, newdata = model_tr, type = "prob")[, "default"]
+roc_train <- roc(response = model_tr$target, predictor = train_probs)
+cat("Train AUC:", auc(roc_train), "\n")
+
+# ROC for test set
+test_probs <- predict(caret_glm, newdata = model_val, type = "prob")[, "default"]
+roc_test <- roc(response = model_val$target, predictor = test_probs)
+cat("Test AUC:", auc(roc_test), "\n")
+
+# Optional: Plot both ROC curves
+plot(roc_train, col = "blue", main = "ROC Curves")
+lines(roc_test, col = "red")
+legend("bottomright", legend = c("Train", "Test"), col = c("blue", "red"), lwd = 2)
+
+```
+
+
+```{r}
+
+caret_rf <- train(
+  target ~ amt_income_total +
+           amt_annuity +
+           amt_credit +
+           ext_source_1 +
+           ext_source_2 +
+           ext_source_3 +
+           days_birth +
+           employment_duration,,
+  method = "ranger",
+  trControl = trainControl(
+    method = "cv",
+    number = 5,
+    classProbs = TRUE,
+    summaryFunction = twoClassSummary,
+    sampling = "down"
+  ),
+  data = model_tr,
+  metric = "ROC"
+)
+
+summary(caret_rf)
+
+
+# ROC for training set
+train_probs <- predict(caret_rf, newdata = model_tr, type = "prob")[, "default"]
+roc_train <- roc(response = model_tr$target, predictor = train_probs)
+cat("Train AUC:", auc(roc_train), "\n")
+
+# ROC for test set
+test_probs <- predict(caret_rf, newdata = model_val, type = "prob")[, "default"]
+roc_test <- roc(response = model_val$target, predictor = test_probs)
+cat("Test AUC:", auc(roc_test), "\n")
+
+# Optional: Plot both ROC curves
+plot(roc_train, col = "blue", main = "ROC Curves")
+lines(roc_test, col = "red")
+legend("bottomright", legend = c("Train", "Test"), col = c("blue", "red"), lwd = 2)
+
+# ROC for training set
+train_probs <- predict(caret_rf, newdata = model_tr, type = "prob")[, "default"]
+roc_train <- roc(response = model_tr$target, predictor = train_probs)
+cat("Train AUC:", auc(roc_train), "\n")
+
+# ROC for test set
+test_probs <- predict(caret_rf, newdata = model_val, type = "prob")[, "default"]
+roc_test <- roc(response = model_val$target, predictor = test_probs)
+cat("Test AUC:", auc(roc_test), "\n")
+
+# Optional: Plot both ROC curves
+plot(roc_train, col = "blue", main = "ROC Curves")
+lines(roc_test, col = "red")
+legend("bottomright", legend = c("Train", "Test"), col = c("blue", "red"), lwd = 2)
+
+
+
+```
+
+
