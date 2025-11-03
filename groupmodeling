@@ -160,7 +160,25 @@ summary(caret_glm)
 
 summary(caret_rf)
 ```
+
+
 ### Regression commentary and AUC Commentary 
+```{r}
+roc_obj <- roc(model_val$target, logistic_pred_prob)
+print(roc_obj)
+
+auc_value <- auc(roc_obj)
+
+auc_value_caret_cv <- caret_glm$results$ROC
+print(paste("Average Cross-Validation ROC (AUC) for Caret GLM:", round(auc_value_caret_cv, 4)))
+
+plot(roc_obj, col = "blue", lwd = 2)
+
+```
+We tested two logistic regression models: a standard glm on the original imbalanced data (AUC: 0.7306) and a caret model using 5-fold CV with downsampling (AUC: 0.7231). 
+Both methods produced nearly the same results, showing that downsampling did not significantly impact performance for this model. 
+This AUC of ~0.73 indicates a moderate predictive ability.
+
 
 ##### c50 Decision Tree #####
 
