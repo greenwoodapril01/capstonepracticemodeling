@@ -190,16 +190,6 @@ c50_pred_prob <- predict(c50_model, newdata = model_val, type = "prob")[, 2]
 
 
 
-
-
-
-
-
-
-
-
-
-
 ### SUMMARIZED RESULTS AND COMPARISONS, NEXT STEPS###
 
 
