@@ -91,7 +91,9 @@ CLEAN_TRAIN |>
 ## convert employment duration to a factor
 CLEAN_TRAIN$employment_duration <- factor(CLEAN_TRAIN$employment_duration)
 
-
+CLEAN_TRAIN$target <- factor(CLEAN_TRAIN$target, 
+                               levels = c(0, 1), 
+                               labels = c("Repaid", "Default"))
 
 ## set seed for reproducibility
 
