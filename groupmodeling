@@ -111,7 +111,7 @@ model_val <- CLEAN_TRAIN[-index_numbers_split,]
 #We used two different methods in our individual work to downsample. One was a random generated down sampled model that was applied and another 
 #method was the caret packaged used on each model. Results and cross validation was simliar for both, aroun .7.
 
-# Not Downsampled linear regression 
+#Down Sampled Model
 set.seed(123)
 model_tr_down <- downSample(x = model_tr %>% select(-target),
                             y = as.factor(model_tr$target),
@@ -119,7 +119,7 @@ model_tr_down <- downSample(x = model_tr %>% select(-target),
 
 table(model_tr_down$target)
 prop.table(table(model_tr_down$target))
-#regression 
+# Not Downsampled linear regression 
 logistic_model <- glm(target ~ ., 
                       data = model_tr, 
                       family = binomial(link = "logit"))
