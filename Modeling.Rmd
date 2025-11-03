@@ -1,0 +1,209 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+
+library(tidyverse)
+library(caret)
+library(pROC)
+library(janitor)
+library(readr)
+library(dplyr)
+library(caret)
+library(e1071)
+
+application_train <- read_csv("C:/Users/green/Downloads/application_train.csv/application_train.csv")
+
+
+## trim data set to only include most important predictors
+
+application_train_slim <- application_train %>%
+  select(TARGET, CNT_CHILDREN, AMT_INCOME_TOTAL,AMT_CREDIT,AMT_ANNUITY,NAME_INCOME_TYPE,DAYS_BIRTH,DAYS_EMPLOYED,OCCUPATION_TYPE,CNT_FAM_MEMBERS,EXT_SOURCE_1,EXT_SOURCE_2,EXT_SOURCE_3)
+
+
+## I chose to create a new column called employment duration that bins the DAYS_EMPLOYED column and handles the special 365243 value
+
+APP_TRAIN_BIN_EMPLOYMENT <- application_train_slim %>%
+  mutate(
+    EMPLOYMENT_DURATION = case_when(
+      DAYS_EMPLOYED == 365243 ~ "Not Working",
+      DAYS_EMPLOYED > -365 ~ "Short Term",
+      DAYS_EMPLOYED <= -365 & DAYS_EMPLOYED >= -1825 ~ "Medium Term",
+      TRUE ~ "Long Term" # Default case if no other conditions are met
+    )
+  )
+
+## Drop the rows where AMT_ANNUITY is blank because there are only a few
+
+DROP_BLANKS <- APP_TRAIN_BIN_EMPLOYMENT %>%
+  filter(!is.na(AMT_ANNUITY))
+
+
+## Drop the rows where CNT_FAM_MEMBERS is blank because there are only a few
+
+DROP_BLANKS <- DROP_BLANKS %>%
+  filter(!is.na(CNT_FAM_MEMBERS))
+  
+
+
+## Replace NA's in OCCUPATION_TYPE with an "Unavailable"
+
+FIX_EMPLOYMENT <- DROP_BLANKS %>%
+  mutate(
+    OCCUPATION_TYPE = case_when(
+      is.na(OCCUPATION_TYPE) ~ "Unavailable",
+      TRUE ~ OCCUPATION_TYPE
+    )
+  )
+
+
+## Do median imputation for the missing risk score values
+
+risk_scores <- FIX_EMPLOYMENT[, c("EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3")]
+
+
+for (col in names(risk_scores)) {
+  # Convert to numeric if not already
+  risk_scores[[col]] <- as.numeric(risk_scores[[col]])
+  
+  # Replace NA with median
+  if (is.numeric(risk_scores[[col]])) {
+    median_value <- median(risk_scores[[col]], na.rm = TRUE)
+    risk_scores[[col]][is.na(risk_scores[[col]])] <- median_value
+  }
+}
+
+FIX_EMPLOYMENT[, c("EXT_SOURCE_1", "EXT_SOURCE_2", "EXT_SOURCE_3")] <- risk_scores
+
+CLEAN_TRAIN <- clean_names(FIX_EMPLOYMENT)
+view(CLEAN_TRAIN)
+
+
+```
+
+
+
+
+
+
+```{r}
+## look at proportions of the target variable
+
+CLEAN_TRAIN |>
+     count(target) |>
+     mutate(perc = n/sum(n)) 
+
+## convert employment duration to a factor
+CLEAN_TRAIN$employment_duration <- factor(CLEAN_TRAIN$employment_duration)
+
+
+
+## set seed for reproducibility
+
+set.seed(12345)
+
+## split training data into a train set and a model validation set
+
+index_numbers_split <- createDataPartition(CLEAN_TRAIN$target,p=.7,list = FALSE)
+
+model_tr <- CLEAN_TRAIN[index_numbers_split,]
+model_val <- CLEAN_TRAIN[-index_numbers_split,]
+
+
+
+```
+
+```{R}
+# Downsample 
+set.seed(123)
+model_tr_down <- downSample(x = model_tr %>% select(-target),
+                            y = as.factor(model_tr$target),
+                            yname = "target")
+
+table(model_tr_down$target)
+prop.table(table(model_tr_down$target))
+
+```
+
+```{R}
+library(glmnet)      
+library(C50)        
+library(randomForest) 
+library(pROC)        
+library(ggplot2)     
+
+### Fit logistic regression ###
+
+logistic_model <- glm(target ~ ., 
+                      data = model_tr, 
+                      family = binomial(link = "logit"))
+
+logistic_pred_prob <- predict(logistic_model, 
+                               newdata = model_val, 
+                               type = "response")
+
+logistic_pred_class <- ifelse(logistic_pred_prob > 0.5, 1, 0)
+
+
+# c50 Decision Tree
+
+model_tr$target <- as.factor(model_tr$target)
+model_val$target <- as.factor(model_val$target)
+
+c50_model <- C5.0(target ~ ., 
+                  data = model_tr,
+                  trials = 10)  
+
+c50_pred_class <- predict(c50_model, newdata = model_val, type = "class")
+c50_pred_prob <- predict(c50_model, newdata = model_val, type = "prob")[, 2]
+
+
+### Random Forest ###
+rf_model <- randomForest(target ~ ., 
+                         data = model_tr_down,
+                         ntree = 50,          
+                         mtry = sqrt(ncol(model_tr) - 1),  
+                         importance = TRUE)
+
+# Predictions
+rf_pred_class <- predict(rf_model, newdata = model_val, type = "class")
+rf_pred_prob <- predict(rf_model, newdata = model_val, type = "prob")[, 2]
+
+### AUC CURVES ###
+
+y_val_numeric <- as.numeric(as.character(model_val$target))
+
+# ROC and AUC for each model
+roc_logistic <- roc(y_val_numeric, logistic_pred_prob)
+roc_c50 <- roc(y_val_numeric, c50_pred_prob)
+roc_rf <- roc(y_val_numeric, rf_pred_prob)
+
+auc_logistic <- auc(roc_logistic)
+auc_c50 <- auc(roc_c50)
+auc_rf <- auc(roc_rf)
+
+#  AUC results
+print(auc_logistic)
+print(auc_c50)
+print(auc_rf)
+
+plot(roc_logistic, col = "blue", lwd = 2, main = "ROC Curves - Credit Default Prediction")
+plot(roc_c50, col = "green", lwd = 2, add = TRUE)
+plot(roc_rf, col = "purple", lwd = 2, add = TRUE)
+
+legend("bottomright", 
+       legend = c(
+         paste("Logistic Regression (AUC =", round(auc_logistic, 3), ")"),
+         paste("C5.0 Decision Tree (AUC =", round(auc_c50, 3), ")"),
+         paste("Random Forest (AUC =", round(auc_rf, 3), ")")
+       ),
+       col = c("blue", "green", "purple"),
+       lwd = 2,
+       cex = 0.8)
+
+
+
+```
